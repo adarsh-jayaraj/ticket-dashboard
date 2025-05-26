@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>JIRA Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background: #f4f4f4;
+    }
+    .card {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: center;
+    }
+    th {
+      background-color: #eee;
+    }
+    canvas {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>JIRA Dashboard</h1>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Total Tickets Closed</h2>
+      <p id="totalTickets" style="font-size: 2em;">...</p>
+    </div>
+    <div class="card">
+      <h2>Tickets Closed Per Month</h2>
+      <ul id="monthlyTickets"></ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Tickets Closed by Assignee (Monthly)</h2>
+    <canvas id="ticketsByAssignee"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Average TAT by Assignee (Monthly)</h2>
+    <canvas id="avgTatByAssignee"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Combined Table (Tickets Closed & Average TAT)</h2>
+    <div id="combinedTable"></div>
+  </div>
+
+  <div class="card">
+    <h2>Tickets Closed & Avg TAT Over Time</h2>
+    <canvas id="combinedChart"></canvas>
+  </div>
+
+  <script>
+    const SHEET_URL = "https://script.google.com/macros/s/AKfycby2j7bdlNpj81qg8HDSicbUPFE8qtS_Oq1JmMIB7aIcCqqSZxyzxc71QJCLf2uBNPoz/exec";
+
+    async function fetchData() {
+      const res = await fetch(SHEET_URL);
+      const data = await res.json();
+
+      const formatMonthYear = row => `${row.Month}-${row.Year}`;
+      const allMonthYears = [...new Set(data.map(formatMonthYear))].sort();
+      const assignees = [...new Set(data.map(r => r.Assignee))];
+
+      // 1. Total tickets closed
+      document.getElementById('totalTickets').innerText = data.length;
+
+      // 2. Monthly ticket count
+      const monthlyCounts = {};
+      data.forEach(row => {
+        const key = formatMonthYear(row);
+        monthlyCounts[key] = (monthlyCounts[key] || 0) + 1;
+      });
+      document.getElementById('monthlyTickets').innerHTML = Object.entries(monthlyCounts)
+        .sort()
+        .map(([month, count]) => `<li><b>${month}:</b> ${count}</li>`)
+        .join('');
+
+      // 3. Tickets closed per assignee/month
+      const countData = {};
+      const tatData = {};
+      data.forEach(row => {
+        const key = `${row.Assignee}_${formatMonthYear(row)}`;
+        countData[key] = (countData[key] || 0) + 1;
+        tatData[key] = (tatData[key] || 0) + parseFloat(row["TAT (in days)"]);
+      });
+
+      // 4. Draw charts
+      const getCountDataset = () => assignees.map(assignee => ({
+        label: assignee,
+        data: allMonthYears.map(month => countData[`${assignee}_${month}`] || 0)
+      }));
+
+      const getTatDataset = () => assignees.map(assignee => ({
+        label: assignee,
+        data: allMonthYears.map(month => {
+          const key = `${assignee}_${month}`;
+          return countData[key] ? tatData[key] / countData[key] : 0;
+        })
+      }));
+
+      new Chart(document.getElementById("ticketsByAssignee"), {
+        type: "bar",
+        data: {
+          labels: allMonthYears,
+          datasets: getCountDataset()
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: {
+              display: true,
+              text: "Tickets Closed by Assignee"
+            }
+          }
+        }
+      });
+
+      new Chart(document.getElementById("avgTatByAssignee"), {
+        type: "bar",
+        data: {
+          labels: allMonthYears,
+          datasets: getTatDataset()
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: {
+              display: true,
+              text: "Average TAT by Assignee"
+            }
+          }
+        }
+      });
+
+      // 5. Combined table (Count + Avg TAT)
+      let tableHTML = "<table><thead><tr><th>Assignee</th>";
+      allMonthYears.forEach(month => {
+        tableHTML += `<th>${month}<br>(Count / Avg TAT)</th>`;
+      });
+      tableHTML += "</tr></thead><tbody>";
+
+      assignees.forEach(assignee => {
+        tableHTML += `<tr><td>${assignee}</td>`;
+        allMonthYears.forEach(month => {
+          const key = `${assignee}_${month}`;
+          const count = countData[key] || 0;
+          const avgTat = count ? (tatData[key] / count).toFixed(1) : "-";
+          tableHTML += `<td>${count} / ${avgTat}</td>`;
+        });
+        tableHTML += "</tr>";
+      });
+
+      tableHTML += "</tbody></table>";
+      document.getElementById("combinedTable").innerHTML = tableHTML;
+
+      // 6. Combined graph (total count + avg TAT over months)
+      const totalCounts = allMonthYears.map(month => {
+        return Object.keys(countData)
+          .filter(key => key.endsWith(`_${month}`))
+          .reduce((sum, k) => sum + countData[k], 0);
+      });
+      const avgTats = allMonthYears.map((month, i) => {
+        const totalTat = Object.keys(tatData)
+          .filter(key => key.endsWith(`_${month}`))
+          .reduce((sum, k) => sum + tatData[k], 0);
+        const totalCount = totalCounts[i];
+        return totalCount ? (totalTat / totalCount).toFixed(2) : 0;
+      });
+
+      new Chart(document.getElementById("combinedChart"), {
+        type: "bar",
+        data: {
+          labels: allMonthYears,
+          datasets: [
+            {
+              type: 'bar',
+              label: "Tickets Closed",
+              data: totalCounts,
+              yAxisID: 'y',
+              backgroundColor: 'rgba(54, 162, 235, 0.6)'
+            },
+            {
+              type: 'line',
+              label: "Average TAT (Days)",
+              data: avgTats,
+              yAxisID: 'y1',
+              borderColor: 'red',
+              backgroundColor: 'red'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          stacked: false,
+          plugins: {
+            title: {
+              display: true,
+              text: 'Tickets Closed and Avg TAT Over Time'
+            }
+          },
+          scales: {
+            y: {
+              type: 'linear',
+              position: 'left',
+              title: {
+                display: true,
+                text: 'Tickets Closed'
+              }
+            },
+            y1: {
+              type: 'linear',
+              position: 'right',
+              title: {
+                display: true,
+                text: 'Avg TAT (Days)'
+              },
+              grid: {
+                drawOnChartArea: false,
+              }
+            }
+          }
+        }
+      });
+
+    }
+
+    fetchData();
+  </script>
+
+</body>
+</html>
